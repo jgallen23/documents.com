@@ -1,0 +1,3 @@
+[submodule "taskpaperdates"]
+	path = taskpaperdates
+	url = git://github.com/jgallen23/taskpaper-dates.git
