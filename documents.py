@@ -20,6 +20,9 @@ from google.appengine.ext.webapp import util
 from google.appengine.ext.webapp import template
 from google.appengine.api.datastore_types import Blob 
 
+from taskpaperdates import taskpaper_dates
+
+
 admin = "jesse@hogbaysoftware.com"
 dmp = diff_match_patch()
 
@@ -433,6 +436,7 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 		return None
 
 	document.version = document.version + 1
+	parsed_dates = False
 	puts = [document, document_account]
 	levenshtein = (len(tags_added) + len(tags_removed) + len(user_ids_added) + len(user_ids_removed)) * 10
 	conflicts = []
@@ -459,6 +463,18 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 		body = document.get_body()
 		content, results, results_patches = dmp.patch_apply(patches, body.content)
 		content = standardize_line_endings_and_characters(content)
+
+		#start date parsing
+		if document.name.endswith("taskpaper"):
+			content_new = str(taskpaper_dates.process_string(content))
+			revision = document.create_revision(user_account, document_account, content, levenshtein, conflicts, revision_name)
+			puts.append(revision)
+			date_patches = dmp.patch_make(content, content_new)
+			logging.info("Date Diff: \n%s", dmp.patch_toText(date_patches))
+			content = content_new
+			parsed_dates = True
+		#end date parsing
+
 		document.size -= body.content_size
 		body.content = content
 		body.content_size = len(content)
@@ -473,8 +489,9 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 				levenshtein += dmp.diff_levenshtein(results_patches[index].diffs)
 			index += 1
 
-	revision = document.create_revision(user_account, document_account, document.get_body().content, levenshtein, conflicts, revision_name)
-	puts.append(revision)
+	if not parsed_dates:
+		revision = document.create_revision(user_account, document_account, document.get_body().content, levenshtein, conflicts, revision_name)
+		puts.append(revision)
 
 	db.put(puts)
 	document.clearMemcache(user_ids_removed)
@@ -524,7 +541,7 @@ class DocumentHandler(BaseHandler):
 		user_ids_added = [] if user_ids_added == None else user_ids_added
 		user_ids_removed = jsonDocument.get('user_ids_removed')
 		user_ids_removed = [] if user_ids_removed == None else user_ids_removed
-		results = db.run_in_transaction(delta_update_document_txn, self, user_account, document_account_id, document_id, version, name, patches, tags_added, tags_removed, user_ids_added, user_ids_removed)
+		results = db.run_in_transaction(delta_update_document_txn, self, user_account, document_account_id, document_id, version, name, patches, tags_added, tags_removed, user_ids_added, user_ids_removed, always_return_content = True)
 		if results:
 			write_json_response(self.response, results)
 			
