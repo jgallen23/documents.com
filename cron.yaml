@@ -2,3 +2,7 @@ cron:
 - description: documents cron
   url: /v1/cron
   schedule: every 1 minutes
+- description: date parsing cron
+  url: /v1/date-cron
+  schedule: every day 00:05
+  timezone: America/Los_Angeles

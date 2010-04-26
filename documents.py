@@ -19,6 +19,7 @@ from google.appengine.api import memcache
 from google.appengine.ext.webapp import util
 from google.appengine.ext.webapp import template
 from google.appengine.api.datastore_types import Blob 
+from google.appengine.api.labs import taskqueue
 
 from taskpaperdates import taskpaper_dates
 
@@ -436,7 +437,6 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 		return None
 
 	document.version = document.version + 1
-	parsed_dates = False
 	puts = [document, document_account]
 	levenshtein = (len(tags_added) + len(tags_removed) + len(user_ids_added) + len(user_ids_removed)) * 10
 	conflicts = []
@@ -464,17 +464,6 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 		content, results, results_patches = dmp.patch_apply(patches, body.content)
 		content = standardize_line_endings_and_characters(content)
 
-		#start date parsing
-		if document.name.endswith("taskpaper"):
-			content_new = str(taskpaper_dates.process_string(content))
-			revision = document.create_revision(user_account, document_account, content, levenshtein, conflicts, revision_name)
-			puts.append(revision)
-			date_patches = dmp.patch_make(content, content_new)
-			logging.info("Date Diff: \n%s", dmp.patch_toText(date_patches))
-			content = content_new
-			parsed_dates = True
-		#end date parsing
-
 		document.size -= body.content_size
 		body.content = content
 		body.content_size = len(content)
@@ -489,9 +478,8 @@ def delta_update_document_txn(handler, user_account, document_account_id, docume
 				levenshtein += dmp.diff_levenshtein(results_patches[index].diffs)
 			index += 1
 
-	if not parsed_dates:
-		revision = document.create_revision(user_account, document_account, document.get_body().content, levenshtein, conflicts, revision_name)
-		puts.append(revision)
+	revision = document.create_revision(user_account, document_account, document.get_body().content, levenshtein, conflicts, revision_name)
+	puts.append(revision)
 
 	db.put(puts)
 	document.clearMemcache(user_ids_removed)
@@ -541,7 +529,9 @@ class DocumentHandler(BaseHandler):
 		user_ids_added = [] if user_ids_added == None else user_ids_added
 		user_ids_removed = jsonDocument.get('user_ids_removed')
 		user_ids_removed = [] if user_ids_removed == None else user_ids_removed
-		results = db.run_in_transaction(delta_update_document_txn, self, user_account, document_account_id, document_id, version, name, patches, tags_added, tags_removed, user_ids_added, user_ids_removed, always_return_content = True)
+		results = db.run_in_transaction(delta_update_document_txn, self, user_account, document_account_id, document_id, version, name, patches, tags_added, tags_removed, user_ids_added, user_ids_removed)
+		if patches and (patches.find("@due") != -1 or patches.find("@done") != -1):
+			taskqueue.add(url = '/v1/documents/%s-%s/parsedates/' % (document_account_id, document_id))
 		if results:
 			write_json_response(self.response, results)
 			
@@ -646,6 +636,33 @@ class DocumentsCronHandler(BaseHandler):
 		
 		return
 
+class DocumentDatesHandler(BaseHandler):
+	def post(self, document_account_id, document_id):
+		user_account = Account.get_by_id(int(document_account_id))
+		document = db.get(db.Key.from_path('Account', int(document_account_id), 'Document', int(document_id)))
+		logging.info("%s, %s, %s, %s" % (document_account_id, document_id, user_account, document))
+		if document.name.endswith("taskpaper"):
+			content = document.get_body().content
+			content_new = str(taskpaper_dates.parse(content))
+			date_patches = dmp.patch_make(content, content_new)
+			patches_text = dmp.patch_toText(date_patches)
+			logging.info("Date Diff: \n%s", patches_text)
+			results = db.run_in_transaction(delta_update_document_txn, self, user_account, user_account.key().id(), document.key().id(), document.version, document.name, patches_text, [], [], [], [])
+			if results:
+				write_json_response(self.response, results)
+
+
+class DocumentDatesCronHandler(BaseHandler):
+	def get(self):
+		for doc in Document.gql("WHERE deleted = False AND modified > :1", datetime.datetime.now() - datetime.timedelta(days=1)).fetch(1000):
+			account_by_user_id_query.bind(doc.user_ids[0])
+			accounts = account_by_user_id_query.fetch(1)
+			document_account_id = accounts[0].key().id() if len(accounts) != 0 else None
+			logging.info("%s"% document_account_id)
+			if document_account_id:
+				taskqueue.add(url = '/v1/documents/%s-%s/parsedates/' % (document_account_id, doc.key().id()))
+
+
 class PrintUserHandler(BaseHandler):
 	def get(self):
 		user = users.get_current_user()
@@ -665,7 +682,9 @@ def main():
 		('/v1/documents/([0-9]+)-([0-9]+)/?', DocumentHandler),
 		('/v1/documents/([0-9]+)-([0-9]+)/revisions/?', DocumentRevisionsHandler),
 		('/v1/documents/([0-9]+)-([0-9]+)/revisions/(.+)/?', DocumentRevisionHandler),
+		('/v1/documents/([0-9]+)-([0-9]+)/parsedates/?', DocumentDatesHandler),
 		('/v1/cron', DocumentsCronHandler),
+		('/v1/date-cron', DocumentDatesCronHandler),
 		('/v1/printuser/?', PrintUserHandler),
 		], debug=False)
 		
