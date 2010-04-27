@@ -654,7 +654,7 @@ class DocumentDatesHandler(BaseHandler):
 
 class DocumentDatesCronHandler(BaseHandler):
 	def get(self):
-		for doc in Document.gql("WHERE deleted = False AND modified > :1", datetime.datetime.now() - datetime.timedelta(days=1)).fetch(1000):
+		for doc in Document.gql("WHERE deleted = False AND modified < :1", datetime.datetime.now() - datetime.timedelta(days=1)).fetch(1000):
 			account_by_user_id_query.bind(doc.user_ids[0])
 			accounts = account_by_user_id_query.fetch(1)
 			document_account_id = accounts[0].key().id() if len(accounts) != 0 else None
