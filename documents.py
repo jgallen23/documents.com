@@ -654,13 +654,17 @@ class DocumentDatesHandler(BaseHandler):
 
 class DocumentDatesCronHandler(BaseHandler):
 	def get(self):
-		for doc in Document.gql("WHERE deleted = False AND modified < :1", datetime.datetime.now() - datetime.timedelta(days=1)).fetch(1000):
+		logging.info("running cron")
+		for doc in Document.gql("WHERE deleted = False").fetch(100):
 			account_by_user_id_query.bind(doc.user_ids[0])
 			accounts = account_by_user_id_query.fetch(1)
 			document_account_id = accounts[0].key().id() if len(accounts) != 0 else None
 			logging.info("%s"% document_account_id)
 			if document_account_id:
 				taskqueue.add(url = '/v1/documents/%s-%s/parsedates/' % (document_account_id, doc.key().id()))
+
+	def post(self):
+		self.get()
 
 
 class PrintUserHandler(BaseHandler):
